@@ -1,0 +1,339 @@
+---
+title: "Stochastically Perturbed Parmaters [SPP]"
+author: "Andrew Singleton"
+date: "Preliminary point verification for SOP 1"
+output: 
+  revealjs::revealjs_presentation:
+    theme: league
+    transition: fade
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE, dev.args = list(bg = "transparent"), collapse = TRUE,
+  fig.height = 5
+)
+
+library(harp)
+library(tidyverse)
+library(here)
+library(patchwork)
+library(parallel)
+
+plot_colours <- data.frame(
+  mname = c("REF", "REF_new"),
+  colour = c("#FFC080", "#C04040")
+)
+
+theme_alertness <- function (
+  base_size = 11, base_family = "", base_line_size = base_size/22,
+  base_rect_size = base_size/22
+) {
+  
+  ggplot2::theme_grey(base_size = base_size, base_family = base_family,
+    base_line_size = base_line_size, base_rect_size = base_rect_size) %+replace%
+    ggplot2::theme(
+      text = element_text(
+        family = base_family,
+        face = "plain",
+        colour = "grey72",
+        size = base_size,
+        lineheight = 0.9,
+        hjust = 0.5,
+        vjust = 0.5,
+        angle = 0,
+        margin = margin(),
+        debug = FALSE
+      ),
+      axis.text         = element_text(size = rel(0.8), colour = "grey50"),
+      plot.background   = ggplot2::element_rect(fill = "#333333", colour = NA),
+      panel.background  = ggplot2::element_rect(fill = "#333333", colour = NA),
+      panel.border      = ggplot2::element_rect(fill = NA, colour = "grey92"),
+      panel.grid        = ggplot2::element_line(colour = "grey30"),
+      panel.grid.minor  = ggplot2::element_line(size = ggplot2:::rel(0.5)),
+      strip.background  = ggplot2::element_rect(fill = "#4E5C68", colour = "grey92"),
+      strip.text        = ggplot2::element_text(colour = "grey92"),
+      legend.key        = ggplot2::element_rect(fill = "#333333", colour = NA),
+      legend.background = ggplot2::element_rect(fill = "#333333", colour = NA),
+      complete          = TRUE
+    )
+}
+
+verif <- readRDS(here("data", "verification", "sop1_spp.rds"))
+t2m <- readRDS(here("data", "verification", "t2m_timeSeries_sop1.rds"))
+verif_t2m <- readRDS(here("data", "verification", "t2m_timeSeries_sop1_verif.rds"))
+
+basic_plot <- function(vvv) {
+  
+  p1 <- plot_point_verif(
+    vvv, spread_skill, plot_num_cases = FALSE, plot_caption = "", 
+    colour_table = plot_colours, plot_title = "Spread : Skill - SOP 1"
+  ) + 
+    scale_linetype_manual(values = c(1, 3), labels = c("RMSE", "Spread")) +
+    guides(linetype = guide_legend(NULL, override.aes = list(colour = "#CCCCCC"))) +
+    labs(x = "Lead time [h]")
+  
+  p2 <- plot_point_verif(
+    vvv, mean_bias, plot_num_cases = FALSE, plot_caption = "", 
+    colour_table = plot_colours, plot_title = "Mean Bias - SOP 1"
+  ) +
+    labs(x = "Lead time [h]")
+  
+  p3 <- plot_point_verif(
+    vvv, crps, plot_num_cases = FALSE, plot_caption = "", 
+    colour_table = plot_colours, plot_title = "CRPS - SOP 1"
+  ) +
+    labs(x = "Lead time [h]")
+  
+  p4 <- plot_point_verif(
+    vvv, normalized_rank_histogram, 
+    colour_table = plot_colours, plot_title = "Rank Histogram - SOP 1"
+  )
+  
+  (p1 + p2) / (p3 + p4) + plot_layout(guides = "collect") &
+    theme_alertness(base_size = 12) &
+    theme(legend.position = "bottom")
+}
+
+profile_plot <- function(vvv, score) {
+  score <- enquo(score)
+  vvv <- filter_list(vvv, leadtime %% 6 == 0) %>% 
+    mutate_list(
+      leadtime = fct_inorder(
+        paste0("T + ", formatC(leadtime, width = 2, flag = "0"), "h")
+      )
+    )
+
+  plot_profile_verif(
+    vvv, !!score, facet_by = vars(leadtime), colour_table = plot_colours,
+    plot_title = "Spread : Skill - SOP 1"
+  ) + 
+    scale_linetype_manual(values = c(1, 3), labels = c("RMSE", "Spread")) +
+    guides(linetype = guide_legend(NULL, override.aes = list(colour = "#CCCCCC"))) +
+    labs(x = "Lead time [h]") +
+    theme_alertness()
+}
+
+```
+
+<style>
+  .reveal {font-family: comfortaa;}
+  .reveal h1, .reveal h2, .reveal h3, .reveal h4, .reveal h5, .reveal h6 {text-transform:none; font-family:comfortaa;}
+  .reveal section img { background:none; border:none; box-shadow:none; }
+  .reveal table { border-width:0px; }
+  .reveal table td { bordoer-width:0px; }
+  .reveal pre code {background:#222;}
+  .reveal pre {margin: 7px auto;}
+  code span.kw {color:yellow}
+  code span.dt {color: tomato}
+</style>
+
+## __What parameters do we perturb?__
+- <span style="color:#FF7777">Cloud thickness threshold for shallow / deep convection</span>
+- <span style="color:#BBBBFF">Cloud ice content impact on cloud thickness</span>
+- <span style="color:#BBBBFF">Ice nucleii concentration</span>
+- <span style="color:#7777FF">Saturation limit sensitivity for condensation*</span>
+- <span style="color:#7777FF">Kogan autoconversion speed</span>
+- <span style="color:#7777FF">Kogan sub grid scale (cloud fraction) sensitivity*</span>
+- <span style="color:#DDDD55">Impact of graupel on radiation</span>
+- <span style="color:#DDDD55">Impact of snow on radiation*</span>
+- <span style="color:#99FF99">Top entrainment efficiency</span>
+- <span style="color:#99FF99">Stable conditions length scale</span>
+- <span style="color:#99FF99">Asymptotic free atmosphere length scale</span>
+
+## ___However...___ __This Presentation is not as advertised!__
+
+- Original reference runs had problems with warm perturbed members in winter and dry perturbed members in summer
+- Original reference did not include modelling of snow on sea ice
+- Some default physics parameter values are changed for SPP
+  
+---
+
+- The reference is re-run with 
+  - 6 perturbed members
+  - No surface data assimilation for perturbed members
+  - Snow on sea ice modelling
+  - Physics parameter defaults changed 
+    
+## __Point verification for (near) surface parameters__
+
+## __2m Temperature__
+```{r t2m-plot, fig.width = 9, fig.height=6.5, fig.align="center"}
+basic_plot(verif$T2m)
+```
+
+## __2m Temperature [members]__
+```{r t2m-members}
+ggplot(
+  mutate(
+    verif$T2m$det_summary_scores,
+    type = case_when(member == "mbr000" ~ "Control", TRUE ~ "Perturbed")
+  ),
+  aes(leadtime, bias, group = member, colour = type)
+) + 
+  geom_line(size = 1) + 
+  scale_colour_manual(NULL, values = c(Perturbed = "#A99080", Control = "#4040FF")) +
+  facet_wrap(vars(mname)) + 
+  geom_line(
+    data = filter(verif$T2m$det_summary_scores, member == "mbr000"), 
+    colour = "#4040FF", size = 1.2
+  ) + 
+  scale_x_continuous(breaks = seq(0, 180, 6)) +
+  labs(x = "Lead Time [h]", y = bquote(Bias~"["*degree*C*"]")) +
+  theme_alertness()
+```
+
+## __2m Temperature "first guess"__
+```{r t2m-fg, fig.width = 9, fig.height=6.5, fig.align="center"}
+p1 <- plot_point_verif(
+  verif_t2m, mean_bias, filter_by = vars(leadtime == 3), x_axis = validdate,
+  plot_num_cases = FALSE, colour_table = plot_colours, plot_caption = ""
+) + 
+  labs(x = "Date", y = bquote(Mean~Bias~"["*degree*C*"]"))
+
+p2 <- ggplot(
+  filter(t2m$REF, leadtime == 3),
+  aes(validdate, T2m, group = validdate)
+) + 
+  geom_boxplot(colour = "#A99080", fill = "#A99080", alpha = 0.1) + 
+  labs(
+    x = "Date", 
+    y = bquote("2m"~Temperature~"["*degree*C*"]"), 
+    title = "Observed 2m Temperature"
+  )
+
+p1 / p2 & theme_alertness()
+```
+
+## __Temperature [upper air]__
+```{r t-ss, fig.width = 9, fig.height=6.5, fig.align="center"}
+profile_plot(verif$T, spread_skill)
+```
+
+## __2m Humidity__
+```{r q2m-plot, fig.width = 9, fig.height=6.5, fig.align="center"}
+basic_plot(verif$Q2m)
+```
+
+## __2m Humidity [members]__
+```{r q2m-members}
+ggplot(
+  mutate(
+    verif$Q2m$det_summary_scores,
+    type = case_when(member == "mbr000" ~ "Control", TRUE ~ "Perturbed")
+  ),
+  aes(leadtime, bias, group = member, colour = type)
+) + 
+  geom_line(size = 1) + 
+  scale_colour_manual(NULL, values = c(Perturbed = "#A99080", Control = "#4040FF")) +
+  facet_wrap(vars(mname)) + 
+  geom_line(
+    data = filter(verif$Q2m$det_summary_scores, member == "mbr000"), 
+    colour = "#4040FF", size = 1.2
+  ) + 
+  scale_x_continuous(breaks = seq(0, 180, 6)) +
+  labs(x = "Lead Time [h]", y = bquote(Bias~"["*kg*"."*kg^-1*"]")) +
+  theme_alertness()
+```
+
+## __Relative Humidity [upper air]__
+```{r t-rh, fig.width = 9, fig.height=6.5, fig.align="center"}
+profile_plot(verif$RH, spread_skill)
+```
+
+## __10m Wind Speed__
+```{r s10m-plot, fig.width = 9, fig.height=6.5, fig.align="center"}
+basic_plot(verif$S10m)
+```
+
+## __10m Wind Speed [members]__
+```{r s10m-members}
+ggplot(
+  mutate(
+    verif$S10m$det_summary_scores,
+    type = case_when(member == "mbr000" ~ "Control", TRUE ~ "Perturbed")
+  ),
+  aes(leadtime, bias, group = member, colour = type)
+) + 
+  geom_line(size = 1) + 
+  scale_colour_manual(NULL, values = c(Perturbed = "#A99080", Control = "#4040FF")) +
+  facet_wrap(vars(mname)) + 
+  geom_line(
+    data = filter(verif$S10m$det_summary_scores, member == "mbr000"), 
+    colour = "#4040FF", size = 1.2
+  ) + 
+  scale_x_continuous(breaks = seq(0, 180, 6)) +
+  labs(x = "Lead Time [h]", y = bquote(Bias~"["*m*"."*s^-1*"]")) +
+  theme_alertness()
+```
+
+## __Wind Speed [upper air]__
+```{r s-ss, fig.width = 9, fig.height=6.5, fig.align="center"}
+profile_plot(verif$S, spread_skill)
+```
+
+## __6h Precipitation__
+```{r pcp6h-plot, fig.width = 9, fig.height=6.5, fig.align="center"}
+basic_plot(filter_list(verif$AccPcp6h, num_cases > 10))
+```
+
+## __6h Precipitation [members]__
+```{r pcp6-members}
+ggplot(
+  mutate(
+    filter(verif$AccPcp6h$det_summary_scores, num_cases > 10),
+    type = case_when(member == "mbr000" ~ "Control", TRUE ~ "Perturbed")
+  ),
+  aes(leadtime, bias, group = member, colour = type)
+) + 
+  geom_line(size = 1) + 
+  scale_colour_manual(NULL, values = c(Perturbed = "#A99080", Control = "#4040FF")) +
+  facet_wrap(vars(mname)) + 
+  geom_line(
+    data = filter(verif$AccPcp6h$det_summary_scores, member == "mbr000", num_cases > 10), 
+    colour = "#4040FF", size = 1.2
+  ) + 
+  scale_x_continuous(breaks = seq(0, 180, 6)) +
+  labs(x = "Lead Time [h]", y = bquote(Bias~"["*kg*"."*m^-2*"]")) +
+  theme_alertness()
+```
+
+## __Total Cloud Cover__
+```{r cctot-plot, fig.width = 9, fig.height=6.5, fig.align="center"}
+basic_plot(verif$CCtot)
+```
+
+## __Total Cloud Cover [members]__
+```{r cctot-members}
+ggplot(
+  mutate(
+    verif$CCtot$det_summary_scores,
+    type = case_when(member == "mbr000" ~ "Control", TRUE ~ "Perturbed")
+  ),
+  aes(leadtime, bias, group = member, colour = type)
+) + 
+  geom_line(size = 1) + 
+  scale_colour_manual(NULL, values = c(Perturbed = "#A99080", Control = "#4040FF")) +
+  facet_wrap(vars(mname)) + 
+  geom_line(
+    data = filter(verif$CCtot$det_summary_scores, member == "mbr000"), 
+    colour = "#4040FF", size = 1.2
+  ) + 
+  scale_x_continuous(breaks = seq(0, 180, 6)) +
+  labs(x = "Lead Time [h]", y = bquote(Bias~"[fraction]")) +
+  theme_alertness()
+```
+
+## __Geopotential Height [upper air]__
+```{r z-ss, fig.width = 9, fig.height=6.5, fig.align="center"}
+profile_plot(verif$Z, spread_skill)
+```
+
+## __Summary__
+- Warming of perturbed members reduced
+- Night time wet bias removed in perturbed members
+- Large positive bias in initial cloud cover for perturbed members removed
+- Overall reduction in spread for all parameters
+- Less spread throughout atmosphere
+
